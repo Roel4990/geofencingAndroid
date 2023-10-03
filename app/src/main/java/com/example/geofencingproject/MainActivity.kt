@@ -14,28 +14,50 @@ import com.google.android.gms.location.GeofencingClient
 import com.google.android.gms.location.GeofencingRequest
 import com.google.android.gms.location.LocationServices
 import android.Manifest
+import android.app.NotificationManager
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.IntentFilter
+import android.location.Location
+import android.location.LocationManager
+import android.net.Uri
+import android.os.Handler
+import android.webkit.JavascriptInterface
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebViewClient
+import android.widget.Toast
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
 
 class MainActivity : AppCompatActivity() {
-    private lateinit var webView: WebView
-    private var target_url = "http://192.168.20.240:3000"
-    private lateinit var geofencingClient: GeofencingClient
-    private lateinit var binding: ActivityMainBinding
+//    private lateinit var webView: WebView
+//    private var target_url = "http://192.168.20.240:3000"
+//    private lateinit var geofencingClient: GeofencingClient
+//    private lateinit var binding: ActivityMainBinding
+//    var context : Context? = null
+//    // Geofencing 권한
+//    private val LOCATION_PERMISSION_REQUEST_CODE = 1000
+    private val localReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            // 이벤트 수신 시 WebView 내의 JavaScript 함수 호출
+            when (intent?.action) {
+                "ENTER" -> webView.evaluateJavascript("javascriptFunctionForEnter();", null)
+                "EXIT" -> webView.evaluateJavascript("javascriptFunctionForExit();", null)
+            }
+        }
+    }
 
-    // Geofencing 권한
-    private val LOCATION_PERMISSION_REQUEST_CODE = 1000
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
+        context = this
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
         webView = binding.webView
 
         geofencingClient = LocationServices.getGeofencingClient(this)
-        checkAndRequestLocationPermission()
+
         // WebView 설정
         webView.apply {
             settings.javaScriptEnabled = true
@@ -45,13 +67,83 @@ class MainActivity : AppCompatActivity() {
             // 웹페이지 불러오기
             loadUrl(target_url)
         }
+        /**
+         * 웹뷰 브릿지
+         **/
+        webView.addJavascriptInterface(WebBridge(),"Native")
+
+    }
+    override fun onResume() {
+        super.onResume()
+        LocalBroadcastManager.getInstance(this).registerReceiver(localReceiver, IntentFilter("GeofencingAction"))
+    }
+
+    override fun onPause() {
+        super.onPause()
+        LocalBroadcastManager.getInstance(this).unregisterReceiver(localReceiver)
+    }
+    class WebBridge{
+        /**
+         * 뱃지 갯수 업데이트 해주는 함수
+         **/
+        @JavascriptInterface
+        fun testBridge(badgeCount : Int){
+
+        }
+        /**
+         * 회사 위치 좌표 가져오기 위도, 경도, 좌표로부터 거리(meteor) 받아오기
+         **/
+        @JavascriptInterface
+        fun getCompanyCoordinate(latitude: Double, longitude: Double, radiusInMeters: Float) {
+            (context as MainActivity).checkLocationAndShowModal(latitude, longitude, radiusInMeters)
+        }
+    }
+
+
+    fun checkLocationAndShowModal(latitude: Double, longitude: Double, radius: Float) {
+        val fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+
+        if (ActivityCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ) != PackageManager.PERMISSION_GRANTED && ActivityCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        fusedLocationClient.lastLocation.addOnSuccessListener { location: Location? ->
+            location?.let {
+                val userLatitude = location.latitude
+                val userLongitude = location.longitude
+                println("userLatitude${userLatitude}")
+                println("userLongitude${userLongitude}")
+                val distance = it.distanceTo(Location(LocationManager.GPS_PROVIDER).apply {
+                    setLatitude(latitude)
+                    setLongitude(longitude)
+                })
+                println("distance${distance}")
+                println("radius${radius}")
+                if (distance > radius) {
+                    showLocationModal()
+                } else {
+                    // Geofencing 활성화 로직
+                    println("Geofencing활성화")
+                    geofencingActive(latitude, longitude, radius)
+                }
+            }
+        }
+    }
+    fun geofencingActive(latitude: Double, longitude: Double, radius: Float) {
         // 지오펜스 설정: 해당 예제에서는 특정 위도, 경도를 중심으로 반경 100m의 원 형태로 지오펜싱 영역을 정의합니다.
+        checkAndRequestLocationPermission()
         val geofence = Geofence.Builder()
             .setRequestId("myGeofenceId")  // 지오펜스 ID 지정
             .setCircularRegion(
-                37.422,   // latitude
-                -122.084, // longitude
-                100f      // radius in meters
+                latitude,   // latitude
+                longitude, // longitude
+                radius      // radius in meters ( 100줄텐데 f 넣어줘야됩니다 )
             )
             .setExpirationDuration(Geofence.NEVER_EXPIRE) // 만료 시간 설정. 이 경우에는 만료하지 않도록 설정됨
             .setTransitionTypes(Geofence.GEOFENCE_TRANSITION_ENTER or Geofence.GEOFENCE_TRANSITION_EXIT) // 어떤 전이를 감지할지 설정
@@ -78,6 +170,10 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
+    fun showLocationModal() {
+        // WebView 모달 띄우는 코드 (다이얼로그나 액티비티 등)
+
+    }
     private fun checkAndRequestLocationPermission() {
         // 권한 확인 및 요청 코드
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
@@ -91,11 +187,21 @@ class MainActivity : AppCompatActivity() {
         when (requestCode) {
             LOCATION_PERMISSION_REQUEST_CODE -> {
                 if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                    // todo 권한이 승인될 경우 코드
+//                    // todo 권한이 승인될 경우 코드
+//                    Toast.makeText(this, "위치 권한이 승인되었습니다.", Toast.LENGTH_SHORT).show()
                 } else {
                     // todo 권한이 거부될 경우 코드
+                    Toast.makeText(this, "위치 권한이 필요합니다.", Toast.LENGTH_SHORT).show()
                 }
             }
         }
+    }
+    companion object {
+        var context : Context? = null
+        private val LOCATION_PERMISSION_REQUEST_CODE = 1000
+        private lateinit var webView: WebView
+        private var target_url = "http://10.30.127.129:3000"
+        private lateinit var geofencingClient: GeofencingClient
+        private lateinit var binding: ActivityMainBinding
     }
 }
